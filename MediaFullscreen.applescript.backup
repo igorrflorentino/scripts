@@ -1,0 +1,507 @@
+-- ============================================================================
+-- MediaFullscreen.applescript
+-- Universal Fullscreen Toggle for macOS
+-- Detects PLAYING media and toggles fullscreen on it
+-- Supports: Chrome, Safari, Firefox, Arc, Brave, Spotify, Apple Music, 
+--           VLC, QuickTime, IINA
+-- ============================================================================
+
+-- ============================================================================
+-- HELPER FUNCTIONS
+-- ============================================================================
+
+-- Debug logging (set to true to enable)
+property debugEnabled : false
+
+on logDebug(message)
+    if debugEnabled then
+        do shell script "echo '[MediaFullscreen] " & message & "' >> /tmp/mediafullscreen_debug.log"
+    end if
+end logDebug
+
+on getProcessNames()
+    tell application "System Events" to return name of processes
+end getProcessNames
+
+on appIsRunning(appName)
+    tell application "System Events"
+        return (name of processes) contains appName
+    end tell
+end appIsRunning
+
+-- Check if a process name starts with a given prefix (for Chrome variants)
+on processStartsWith(procNames, prefix)
+    repeat with p in procNames
+        if p starts with prefix then return true
+    end repeat
+    return false
+end processStartsWith
+
+-- ============================================================================
+-- NATIVE APP DETECTION AND FULLSCREEN
+-- ============================================================================
+
+-- Spotify
+on spotify_is_playing()
+    try
+        if not my appIsRunning("Spotify") then return false
+        set scriptText to "tell application \"Spotify\" to return player state is playing"
+        return run script scriptText
+    on error errMsg
+        my logDebug("Spotify check error: " & errMsg)
+        return false
+    end try
+end spotify_is_playing
+
+on spotify_toggle_fullscreen()
+    try
+        if not my appIsRunning("Spotify") then return false
+        tell application "Spotify" to activate
+        -- Delay allows app to become frontmost before GUI scripting
+        delay 0.15
+        tell application "System Events"
+            tell process "Spotify"
+                try
+                    click menu item "Full Screen" of menu "View" of menu bar 1
+                    return true
+                on error
+                    keystroke "f" using {command down, control down}
+                    return true
+                end try
+            end tell
+        end tell
+    on error errMsg
+        my logDebug("Spotify fullscreen error: " & errMsg)
+        return false
+    end try
+end spotify_toggle_fullscreen
+
+-- Apple Music
+on music_is_playing()
+    try
+        if not my appIsRunning("Music") then return false
+        tell application "Music"
+            return player state is playing
+        end tell
+    on error errMsg
+        my logDebug("Music check error: " & errMsg)
+        return false
+    end try
+end music_is_playing
+
+on music_toggle_fullscreen()
+    try
+        if not my appIsRunning("Music") then return false
+        tell application "Music" to activate
+        -- Delay allows app to become frontmost before GUI scripting
+        delay 0.15
+        tell application "System Events"
+            tell process "Music"
+                keystroke "f" using {command down, control down}
+            end tell
+        end tell
+        return true
+    on error errMsg
+        my logDebug("Music fullscreen error: " & errMsg)
+        return false
+    end try
+end music_toggle_fullscreen
+
+-- VLC
+on vlc_is_playing()
+    try
+        if not my appIsRunning("VLC") then return false
+        return run script "tell application \"VLC\" to return playing"
+    on error errMsg
+        my logDebug("VLC check error: " & errMsg)
+        return false
+    end try
+end vlc_is_playing
+
+on vlc_toggle_fullscreen()
+    try
+        if not my appIsRunning("VLC") then return false
+        tell application "VLC" to activate
+        -- Delay allows app to become frontmost before GUI scripting
+        delay 0.15
+        tell application "System Events"
+            tell process "VLC"
+                keystroke "f"
+            end tell
+        end tell
+        return true
+    on error errMsg
+        my logDebug("VLC fullscreen error: " & errMsg)
+        return false
+    end try
+end vlc_toggle_fullscreen
+
+-- QuickTime Player
+on quicktime_is_playing()
+    try
+        if not my appIsRunning("QuickTime Player") then return false
+        tell application "QuickTime Player"
+            if (count of documents) > 0 then
+                return playing of document 1
+            end if
+        end tell
+    on error errMsg
+        my logDebug("QuickTime check error: " & errMsg)
+        return false
+    end try
+    return false
+end quicktime_is_playing
+
+on quicktime_toggle_fullscreen()
+    try
+        if not my appIsRunning("QuickTime Player") then return false
+        tell application "QuickTime Player" to activate
+        -- Delay allows app to become frontmost before GUI scripting
+        delay 0.15
+        tell application "System Events"
+            tell process "QuickTime Player"
+                keystroke "f" using {command down, control down}
+            end tell
+        end tell
+        return true
+    on error errMsg
+        my logDebug("QuickTime fullscreen error: " & errMsg)
+        return false
+    end try
+end quicktime_toggle_fullscreen
+
+-- IINA
+on iina_is_playing()
+    try
+        if not my appIsRunning("IINA") then return false
+        tell application "System Events"
+            tell process "IINA"
+                set menuItem to menu item 1 of menu "Playback" of menu bar 1
+                return (name of menuItem) starts with "Pause"
+            end tell
+        end tell
+    on error errMsg
+        my logDebug("IINA check error: " & errMsg)
+        return false
+    end try
+end iina_is_playing
+
+on iina_toggle_fullscreen()
+    try
+        if not my appIsRunning("IINA") then return false
+        tell application "IINA" to activate
+        -- Delay allows app to become frontmost before GUI scripting
+        delay 0.15
+        tell application "System Events"
+            tell process "IINA"
+                keystroke "f"
+            end tell
+        end tell
+        return true
+    on error errMsg
+        my logDebug("IINA fullscreen error: " & errMsg)
+        return false
+    end try
+end iina_toggle_fullscreen
+
+-- ============================================================================
+-- CHROMIUM-BASED BROWSER CONTROLS
+-- ============================================================================
+
+on chromium_has_playing(browserName, jsCheckPlaying)
+    try
+        using terms from application "Google Chrome"
+            tell application browserName
+                if (count of windows) < 1 then return false
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        try
+                            tell t to set res to execute javascript jsCheckPlaying
+                            if res is true or (res as string) is "true" then return true
+                        end try
+                    end repeat
+                end repeat
+            end tell
+        end using terms from
+    on error errMsg
+        my logDebug("Chromium check error (" & browserName & "): " & errMsg)
+        return false
+    end try
+    return false
+end chromium_has_playing
+
+on chromium_find_and_fullscreen(browserName, jsFindAndFullscreen)
+    try
+        using terms from application "Google Chrome"
+            tell application browserName
+                if (count of windows) < 1 then return false
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        try
+                            tell t to set res to execute javascript jsFindAndFullscreen
+                            if res is true or (res as string) is "true" then
+                                -- Activate this browser and make this tab active
+                                tell application browserName to activate
+                                set w's active tab to t
+                                -- Small delay to ensure tab is focused
+                                -- Note: JavaScript already executed fullscreen, no need to execute again
+                                return true
+                            end if
+                        end try
+                    end repeat
+                end repeat
+            end tell
+        end using terms from
+    on error errMsg
+        my logDebug("Chromium fullscreen error (" & browserName & "): " & errMsg)
+        return false
+    end try
+    return false
+end chromium_find_and_fullscreen
+
+-- ============================================================================
+-- SAFARI CONTROLS
+-- ============================================================================
+
+on safari_has_playing(jsCheckPlaying)
+    try
+        tell application "Safari"
+            if (count of windows) < 1 then return false
+            repeat with i from 1 to count of windows
+                set w to window i
+                repeat with j from 1 to count of tabs of w
+                    try
+                        set res to do JavaScript jsCheckPlaying in tab j of w
+                        if res is true or (res as string) is "true" then return true
+                    end try
+                end repeat
+            end repeat
+        end tell
+    on error errMsg
+        my logDebug("Safari check error: " & errMsg)
+        return false
+    end try
+    return false
+end safari_has_playing
+
+on safari_find_and_fullscreen(jsFindAndFullscreen)
+    try
+        tell application "Safari"
+            if (count of windows) < 1 then return false
+            repeat with i from 1 to count of windows
+                set w to window i
+                repeat with j from 1 to count of tabs of w
+                    try
+                        set res to do JavaScript jsFindAndFullscreen in tab j of w
+                        if res is true or (res as string) is "true" then
+                            -- Activate Safari and this tab
+                            tell application "Safari" to activate
+                            set w's current tab to tab j of w
+                            -- Note: JavaScript already executed fullscreen, no need to execute again
+                            return true
+                        end if
+                    end try
+                end repeat
+            end repeat
+        end tell
+    on error errMsg
+        my logDebug("Safari fullscreen error: " & errMsg)
+        return false
+    end try
+    return false
+end safari_find_and_fullscreen
+
+-- ============================================================================
+-- FIREFOX FULLSCREEN (via GUI scripting)
+-- ============================================================================
+
+-- Note: Firefox has very limited AppleScript support, so we can't reliably
+-- detect playing state via JavaScript. This is a best-effort approach.
+on firefox_toggle_fullscreen()
+    try
+        if not my appIsRunning("Firefox") then return false
+        
+        tell application "Firefox" to activate
+        -- Delay allows Firefox to become frontmost and focused
+        delay 0.15
+        
+        tell application "System Events"
+            tell process "Firefox"
+                -- Send 'f' key to toggle fullscreen on video sites
+                -- Note: This assumes user has a video focused/playing
+                keystroke "f"
+            end tell
+        end tell
+        return true
+    on error errMsg
+        my logDebug("Firefox fullscreen error: " & errMsg)
+        return false
+    end try
+end firefox_toggle_fullscreen
+
+-- ============================================================================
+-- MAIN HANDLER
+-- ============================================================================
+on run {input, parameters}
+    -- JavaScript to check if media is playing (not paused)
+    -- Uses readyState >= 2 (HAVE_CURRENT_DATA, allows buffering media)
+    set jsCheckPlaying to "(function() {
+        var media = document.querySelectorAll('video, audio');
+        for (var i = 0; i < media.length; i++) {
+            if (!media[i].paused && !media[i].ended && media[i].readyState >= 2) {
+                return true;
+            }
+        }
+        return false;
+    })()"
+	
+    -- JavaScript to find playing media and toggle fullscreen
+    set jsFindAndFullscreen to "(function() {
+        var media = document.querySelectorAll('video, audio');
+        for (var i = 0; i < media.length; i++) {
+            if (!media[i].paused && !media[i].ended && media[i].readyState >= 2) {
+                try {
+                    if (document.fullscreenElement || 
+                        document.webkitFullscreenElement || 
+                        document.mozFullScreenElement || 
+                        document.msFullscreenElement) {
+                        // Exit fullscreen
+                        if (document.exitFullscreen) {
+                            document.exitFullscreen();
+                        } else if (document.webkitExitFullscreen) {
+                            document.webkitExitFullscreen();
+                        } else if (document.mozCancelFullScreen) {
+                            document.mozCancelFullScreen();
+                        } else if (document.msExitFullscreen) {
+                            document.msExitFullscreen();
+                        }
+                    } else {
+                        // Enter fullscreen
+                        if (media[i].requestFullscreen) {
+                            media[i].requestFullscreen();
+                        } else if (media[i].webkitRequestFullscreen) {
+                            media[i].webkitRequestFullscreen();
+                        } else if (media[i].mozRequestFullScreen) {
+                            media[i].mozRequestFullScreen();
+                        } else if (media[i].msRequestFullscreen) {
+                            media[i].msRequestFullscreen();
+                        } else if (media[i].webkitEnterFullscreen) {
+                            media[i].webkitEnterFullscreen();
+                        }
+                    }
+                    return true;
+                } catch(e) {
+                    console.log('Fullscreen error:', e);
+                }
+            }
+        }
+        return false;
+    })()"
+	
+    -- Detect running processes
+    set procNames to my getProcessNames()
+    
+    -- Check browser availability
+    set chromeRunning to my processStartsWith(procNames, "Google Chrome")
+    set braveRunning to my processStartsWith(procNames, "Brave")
+    set arcRunning to (procNames contains "Arc")
+    set edgeRunning to my processStartsWith(procNames, "Microsoft Edge")
+    set safariRunning to (procNames contains "Safari")
+    set firefoxRunning to (procNames contains "Firefox")
+	
+    -- ========================================================================
+    -- PHASE 1: Detect which app has PLAYING media
+    -- ========================================================================
+    
+    set playingApp to ""
+    set toggled to false
+    
+    -- Check native apps first
+    if my spotify_is_playing() then
+        set playingApp to "Spotify"
+        my logDebug("Toggling fullscreen for Spotify")
+        set toggled to my spotify_toggle_fullscreen()
+    else if my music_is_playing() then
+        set playingApp to "Apple Music"
+        my logDebug("Toggling fullscreen for Apple Music")
+        set toggled to my music_toggle_fullscreen()
+    else if my vlc_is_playing() then
+        set playingApp to "VLC"
+        my logDebug("Toggling fullscreen for VLC")
+        set toggled to my vlc_toggle_fullscreen()
+    else if my quicktime_is_playing() then
+        set playingApp to "QuickTime"
+        my logDebug("Toggling fullscreen for QuickTime")
+        set toggled to my quicktime_toggle_fullscreen()
+    else if my iina_is_playing() then
+        set playingApp to "IINA"
+        my logDebug("Toggling fullscreen for IINA")
+        set toggled to my iina_toggle_fullscreen()
+    end if
+    
+    -- If native app toggled fullscreen, we're done
+    if toggled then
+        display notification "Fullscreen toggled" with title "Media Fullscreen" subtitle playingApp
+        return input
+    end if
+	
+    -- Check browsers for playing media
+    if not toggled and chromeRunning then
+        if my chromium_has_playing("Google Chrome", jsCheckPlaying) then
+            set playingApp to "Google Chrome"
+            my logDebug("Toggling fullscreen for Google Chrome")
+            set toggled to my chromium_find_and_fullscreen("Google Chrome", jsFindAndFullscreen)
+        end if
+    end if
+    
+    if not toggled and braveRunning then
+        if my chromium_has_playing("Brave Browser", jsCheckPlaying) then
+            set playingApp to "Brave Browser"
+            my logDebug("Toggling fullscreen for Brave Browser")
+            set toggled to my chromium_find_and_fullscreen("Brave Browser", jsFindAndFullscreen)
+        end if
+    end if
+    
+    if not toggled and arcRunning then
+        if my chromium_has_playing("Arc", jsCheckPlaying) then
+            set playingApp to "Arc"
+            my logDebug("Toggling fullscreen for Arc")
+            set toggled to my chromium_find_and_fullscreen("Arc", jsFindAndFullscreen)
+        end if
+    end if
+    
+    if not toggled and edgeRunning then
+        if my chromium_has_playing("Microsoft Edge", jsCheckPlaying) then
+            set playingApp to "Microsoft Edge"
+            my logDebug("Toggling fullscreen for Microsoft Edge")
+            set toggled to my chromium_find_and_fullscreen("Microsoft Edge", jsFindAndFullscreen)
+        end if
+    end if
+    
+    if not toggled and safariRunning then
+        if my safari_has_playing(jsCheckPlaying) then
+            set playingApp to "Safari"
+            my logDebug("Toggling fullscreen for Safari")
+            set toggled to my safari_find_and_fullscreen(jsFindAndFullscreen)
+        end if
+    end if
+    
+    -- Show success notification if toggled
+    if toggled then
+        display notification "Fullscreen toggled in browser" with title "Media Fullscreen" subtitle playingApp
+    else
+	
+    -- Note: Firefox is not supported for automatic detection because it lacks
+    -- AppleScript JavaScript API access. Use the 'f' key manually in Firefox.
+    
+    -- ========================================================================
+    -- Show notification if nothing was found/toggled
+    -- ========================================================================
+    
+        -- Only show error if nothing was toggled
+        my logDebug("No playing media found")
+        display notification "No PLAYING media found" with title "Media Fullscreen"
+    end if
+    
+    return input
+end run

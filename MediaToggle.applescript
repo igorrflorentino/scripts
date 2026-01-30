@@ -9,6 +9,19 @@
 -- HELPER FUNCTIONS
 -- ============================================================================
 
+-- Debug logging (set to true to enable)
+property debugEnabled : false
+
+on logDebug(message)
+    if debugEnabled then
+        -- Save logs to ~/Library/Logs/ (standard macOS location)
+        set logDir to (POSIX path of (path to library folder from user domain)) & "Logs"
+        do shell script "mkdir -p " & quoted form of logDir
+        set logPath to logDir & "/mediatoggle_debug.log"
+        do shell script "echo '[MediaToggle] " & message & "' >> " & quoted form of logPath
+    end if
+end logDebug
+
 on getProcessNames()
     tell application "System Events" to return name of processes
 end getProcessNames
@@ -238,9 +251,10 @@ on iina_is_playing()
     end try
 end iina_is_playing
 
-on iina_toggle()
+on iina_pause()
     try
         if not my appIsRunning("IINA") then return false
+        if not my iina_is_playing() then return true -- Already paused
         tell application "System Events"
             tell process "IINA"
                 click menu item 1 of menu "Playback" of menu bar 1
@@ -250,7 +264,22 @@ on iina_toggle()
     on error
         return false
     end try
-end iina_toggle
+end iina_pause
+
+on iina_play()
+    try
+        if not my appIsRunning("IINA") then return false
+        if my iina_is_playing() then return true -- Already playing
+        tell application "System Events"
+            tell process "IINA"
+                click menu item 1 of menu "Playback" of menu bar 1
+            end tell
+        end tell
+        return true
+    on error
+        return false
+    end try
+end iina_play
 
 -- ============================================================================
 -- CHROMIUM-BASED BROWSER CONTROLS (Chrome, Brave, Arc, Edge, etc.)
@@ -261,8 +290,10 @@ on chromium_has_playing(browserName, jsCheckPlaying)
         using terms from application "Google Chrome"
             tell application browserName
                 if (count of windows) < 1 then return false
-                repeat with w in windows
-                    repeat with t in tabs of w
+                repeat with windowIndex from 1 to (count of windows)
+                    set w to window windowIndex
+                    repeat with tabIndex from 1 to (count of tabs of w)
+                        set t to tab tabIndex of w
                         try
                             tell t to set res to execute javascript jsCheckPlaying
                             if res is true or (res as string) is "true" then return true
@@ -282,8 +313,10 @@ on chromium_find_pause_return(browserName, jsFindPauseReturn)
         using terms from application "Google Chrome"
             tell application browserName
                 if (count of windows) < 1 then return ""
-                repeat with w in windows
-                    repeat with t in tabs of w
+                repeat with windowIndex from 1 to (count of windows)
+                    set w to window windowIndex
+                    repeat with tabIndex from 1 to (count of tabs of w)
+                        set t to tab tabIndex of w
                         try
                             tell t to set res to execute javascript jsFindPauseReturn
                             if res is not missing value and res is not "" then
@@ -307,8 +340,10 @@ on chromium_pause_all(browserName, jsPauseAll)
         using terms from application "Google Chrome"
             tell application browserName
                 if (count of windows) < 1 then return
-                repeat with w in windows
-                    repeat with t in tabs of w
+                repeat with windowIndex from 1 to (count of windows)
+                    set w to window windowIndex
+                    repeat with tabIndex from 1 to (count of tabs of w)
+                        set t to tab tabIndex of w
                         try
                             tell t to execute javascript jsPauseAll
                         end try
@@ -324,8 +359,10 @@ on chromium_play_first(browserName, jsPlayFirst)
         using terms from application "Google Chrome"
             tell application browserName
                 if (count of windows) < 1 then return false
-                repeat with w in windows
-                    repeat with t in tabs of w
+                repeat with windowIndex from 1 to (count of windows)
+                    set w to window windowIndex
+                    repeat with tabIndex from 1 to (count of tabs of w)
+                        set t to tab tabIndex of w
                         try
                             tell t to set res to execute javascript jsPlayFirst
                             if res is true or (res as string) is "true" then return true
@@ -344,14 +381,17 @@ on chromium_play_url(browserName, targetURL, jsPlayFirst)
         using terms from application "Google Chrome"
             tell application browserName
                 if (count of windows) < 1 then return false
-                repeat with w in windows
-                    repeat with t in tabs of w
+                repeat with windowIndex from 1 to (count of windows)
+                    set w to window windowIndex
+                    repeat with tabIndex from 1 to (count of tabs of w)
+                        set t to tab tabIndex of w
                         try
                             set tabURL to (URL of t) as string
-                            -- Extract base URL for comparison (ignore query params)
+                            -- More precise URL matching to avoid false positives
                             set baseTarget to my extractBaseURL(targetURL)
                             set baseTab to my extractBaseURL(tabURL)
-                            if baseTab is baseTarget or tabURL contains targetURL or targetURL contains tabURL then
+                            -- Only match if base URLs are identical (not contains)
+                            if baseTab is baseTarget then
                                 tell t to set res to execute javascript jsPlayFirst
                                 if res is true or (res as string) is "true" then return true
                             end if
@@ -474,9 +514,11 @@ on safari_play_url(targetURL, jsPlayFirst)
                 repeat with j from 1 to count of tabs of w
                     try
                         set tabURL to (URL of tab j of w) as string
+                        -- More precise URL matching to avoid false positives
                         set baseTarget to my extractBaseURL(targetURL)
                         set baseTab to my extractBaseURL(tabURL)
-                        if baseTab is baseTarget or tabURL contains targetURL or targetURL contains tabURL then
+                        -- Only match if base URLs are identical (not contains)
+                        if baseTab is baseTarget then
                             set res to do JavaScript jsPlayFirst in tab j of w
                             if res is true or (res as string) is "true" then return true
                         end if
@@ -508,21 +550,29 @@ end safari_play_active_tab
 -- FIREFOX CONTROLS (via GUI scripting - Firefox has limited AppleScript)
 -- ============================================================================
 
+-- Note: Firefox has very limited AppleScript support, so we can't reliably
+-- detect playing state. We use GUI scripting as a best-effort approach.
 on firefox_toggle()
     try
-        if my appIsRunning("Firefox") then
-            tell application "Firefox" to activate
-            delay 0.1
-            tell application "System Events"
-                tell process "Firefox"
-                    -- Try keyboard shortcut (space for play/pause on most video sites)
-                    key code 49 -- space bar
-                end tell
+        if not my appIsRunning("Firefox") then return false
+        
+        tell application "Firefox" to activate
+        -- Delay allows Firefox to become frontmost and focused
+        -- Adjust if needed on slower systems (0.1-0.3 seconds typical)
+        delay 0.15
+        
+        tell application "System Events"
+            tell process "Firefox"
+                -- Send space bar to toggle play/pause on video sites
+                -- Note: This only works if media player has focus
+                key code 49 -- space bar
             end tell
-            return true
-        end if
+        end tell
+        return true
+    on error errMsg
+        my logDebug("Firefox toggle error: " & errMsg)
+        return false
     end try
-    return false
 end firefox_toggle
 
 -- ============================================================================
@@ -531,33 +581,43 @@ end firefox_toggle
 
 -- Extract base URL (protocol + domain + path, without query params or hash)
 on extractBaseURL(fullURL)
+    set oldDelimiters to AppleScript's text item delimiters
     try
         set AppleScript's text item delimiters to "?"
         set baseURL to text item 1 of fullURL
         set AppleScript's text item delimiters to "#"
         set baseURL to text item 1 of baseURL
-        set AppleScript's text item delimiters to ""
+        set AppleScript's text item delimiters to oldDelimiters
         return baseURL
-    on error
+    on error errMsg
+        set AppleScript's text item delimiters to oldDelimiters
+        my logDebug("extractBaseURL error: " & errMsg)
         return fullURL
     end try
 end extractBaseURL
 
--- Write to file
+-- Write to file with validation
 on writeToFile(filePath, content)
     try
         do shell script "echo " & quoted form of content & " > " & quoted form of filePath
+        my logDebug("Wrote to file: " & filePath)
         return true
+    on error errMsg
+        my logDebug("Failed to write file: " & errMsg)
+        return false
     end try
-    return false
 end writeToFile
 
--- Read from file
+-- Read from file with validation
 on readFromFile(filePath)
     try
-        return do shell script "cat " & quoted form of filePath & " 2>/dev/null || echo ''"
+        set content to do shell script "cat " & quoted form of filePath & " 2>/dev/null || echo ''"
+        my logDebug("Read from file: " & filePath & " = " & content)
+        return content
+    on error errMsg
+        my logDebug("Failed to read file: " & errMsg)
+        return ""
     end try
-    return ""
 end readFromFile
 
 -- ============================================================================
@@ -575,11 +635,11 @@ on run {input, parameters}
     end try
     
     -- JavaScript snippets (supports both video AND audio elements)
-    -- Uses readyState check to ensure media is actually loaded
+    -- Uses readyState check (>= 2 = HAVE_CURRENT_DATA, allows buffering media)
     set jsCheckPlaying to "(function() {
         var media = document.querySelectorAll('video, audio');
         for (var i = 0; i < media.length; i++) {
-            if (!media[i].paused && !media[i].ended && media[i].readyState > 2) {
+            if (!media[i].paused && !media[i].ended && media[i].readyState >= 2) {
                 return true;
             }
         }
@@ -596,7 +656,7 @@ on run {input, parameters}
     set jsFindPauseReturn to "(function() {
         var media = document.querySelectorAll('video, audio');
         for (var i = 0; i < media.length; i++) {
-            if (!media[i].paused && !media[i].ended && media[i].readyState > 2) {
+            if (!media[i].paused && !media[i].ended && media[i].readyState >= 2) {
                 try { media[i].pause(); } catch(e) {}
                 return window.location.href;
             }
@@ -650,6 +710,7 @@ on run {input, parameters}
     
     -- If a native app is playing, pause it and save state
     if playingApp is not "" then
+        my logDebug("Pausing " & playingApp)
         if playingApp is "Spotify" then
             my spotify_pause()
         else if playingApp is "Music" then
@@ -659,10 +720,11 @@ on run {input, parameters}
         else if playingApp is "QuickTime" then
             my quicktime_pause()
         else if playingApp is "IINA" then
-            my iina_toggle()
+            my iina_pause()
         end if
         my writeToFile(lastAppFile, playingApp)
         my writeToFile(storageFile, "") -- Clear URL since we're using native app
+        display notification "Media paused" with title "MediaToggle" subtitle playingApp
         return input
     end if
     
@@ -706,6 +768,7 @@ on run {input, parameters}
     
     if browserPlaying is not "" then
         -- Something is playing in a browser: PAUSE it
+        my logDebug("Pausing browser: " & browserPlaying)
         
         if browserPlaying is "Safari" then
             set foundURL to my safari_find_pause_return(jsFindPauseReturn)
@@ -722,6 +785,7 @@ on run {input, parameters}
             my writeToFile(storageFile, foundURL)
         end if
         
+        display notification "Media paused in browser" with title "MediaToggle" subtitle browserPlaying
         return input
     end if
     
@@ -735,19 +799,29 @@ on run {input, parameters}
     
     -- Try to resume native apps first
     if lastApp is "Spotify" and my appIsRunning("Spotify") then
+        my logDebug("Resuming Spotify")
         my spotify_play()
+        display notification "Resuming playback" with title "MediaToggle" subtitle "Spotify"
         return input
     else if lastApp is "Music" and my appIsRunning("Music") then
+        my logDebug("Resuming Music")
         my music_play()
+        display notification "Resuming playback" with title "MediaToggle" subtitle "Apple Music"
         return input
     else if lastApp is "VLC" and my appIsRunning("VLC") then
+        my logDebug("Resuming VLC")
         my vlc_play()
+        display notification "Resuming playback" with title "MediaToggle" subtitle "VLC"
         return input
     else if lastApp is "QuickTime" and my appIsRunning("QuickTime Player") then
+        my logDebug("Resuming QuickTime")
         my quicktime_play()
+        display notification "Resuming playback" with title "MediaToggle" subtitle "QuickTime"
         return input
     else if lastApp is "IINA" and my appIsRunning("IINA") then
-        my iina_toggle()
+        my logDebug("Resuming IINA")
+        my iina_play()
+        display notification "Resuming playback" with title "MediaToggle" subtitle "IINA"
         return input
     end if
     
@@ -786,7 +860,11 @@ on run {input, parameters}
             set resumed to my safari_play_url(lastURL, jsPlayFirst)
         end if
         
-        if resumed then return input
+        if resumed then
+            my logDebug("Resumed media from URL: " & lastURL)
+            display notification "Resuming media from saved URL" with title "MediaToggle" subtitle lastApp
+            return input
+        end if
     end if
     
     -- ========================================================================
@@ -813,7 +891,7 @@ on run {input, parameters}
     -- If frontmost browser had no media, search ALL browsers
     -- (covers multi-monitor and split-screen scenarios)
     if not playedMedia then
-        if chromeRunning and not playedMedia then
+        if chromeRunning then
             set playedMedia to my chromium_play_first("Google Chrome", jsPlayFirst)
         end if
         if braveRunning and not playedMedia then
@@ -831,6 +909,8 @@ on run {input, parameters}
     end if
     
     if playedMedia then
+        my logDebug("Started paused media in browser")
+        display notification "Started paused media" with title "MediaToggle"
         return input
     end if
     
